@@ -1,12 +1,13 @@
 {
   "weights": {
-    "barrier": 0.3,
-    "recent": 0.2,
-    "moisture": 0.18,
+    "barrier": 0.31,
+    "recent": 0.16,
+    "moisture": 0.23,
     "weight_fit": 0.12,
-    "body": 0.08,
-    "odds_value": 0.05,
-    "consistency": 0.07
+    "body": 0.05,
+    "odds_value": 0.03,
+    "consistency": 0.10
   },
-  "learning_rate": 0.03
+  "learning_rate": 0.02,
+  "seed_calibrated": true
 }
