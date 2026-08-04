@@ -1,4 +1,4 @@
-import json, math, io
+import json, math, io, re
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -155,6 +155,100 @@ def stats_df(races):
         rows.append({'日付':r.get('date',''),'レース':r.get('name',''),'結果':'-'.join(map(str,res)),'◎1着':int(p[0]['number']==res[0]),'上位3捕捉':len(set(top3)&set(res)),'印6捕捉':len(set(top6)&set(res))})
     return pd.DataFrame(rows)
 
+
+def _clean_lines(text):
+    return [x.strip() for x in str(text or '').replace('\r','').split('\n') if x.strip()]
+
+def _time_to_sec(text):
+    m=re.search(r'(\d+):(\d+(?:\.\d+)?)', str(text))
+    if not m:return None
+    return int(m.group(1))*60+float(m.group(2))
+
+def parse_entry_text(text):
+    """netkeiba地方競馬の出馬表コピペを馬ごとに解析。"""
+    lines=_clean_lines(text)
+    horses=[]
+    i=0
+    while i < len(lines):
+        if re.fullmatch(r'\d{1,2}', lines[i]) and i+2 < len(lines) and 'データベース' in lines[i+2]:
+            no=int(lines[i]); name=lines[i+1]
+            j=i+3
+            while j < len(lines):
+                if re.fullmatch(r'\d{1,2}', lines[j]) and j+2 < len(lines) and 'データベース' in lines[j+2]:
+                    break
+                j+=1
+            block=lines[i:j]
+            joined='\n'.join(block)
+            carry=None
+            m=re.search(r'(?:牡|牝|セ)\d+\s+.*?\s+([^\s]+)\s+(\d{3}(?:\.\d+)?)', joined)
+            if m: carry=float(m.group(2))
+            odds=None; popularity=None; body=None; change=0
+            # Common mobile copy format:
+            # 63.2
+            # 7人気  904
+            # (+5)
+            em=re.search(r'(?m)^\s*(\d+(?:\.\d+)?)\s*$\n^\s*(\d+)人気(?:\s+(\d{3,4}))?\s*$\n^\s*\(([+-]?\d+)\)\s*$', joined)
+            if em:
+                odds=float(em.group(1)); popularity=int(em.group(2))
+                body=int(em.group(3)) if em.group(3) else None
+                change=int(em.group(4))
+            if odds is None:
+                for k,line in enumerate(block):
+                    if re.fullmatch(r'\d+(?:\.\d+)?', line):
+                        val=float(line)
+                        if k+1 < len(block) and re.search(r'\d+人気', block[k+1]):
+                            odds=val
+                            pm=re.search(r'(\d+)人気',block[k+1]); popularity=int(pm.group(1)) if pm else None
+                            bm=re.search(r'人気\s+(\d{3,4})',block[k+1])
+                            if bm: body=int(bm.group(1))
+                            for z in range(k+2,min(k+7,len(block))):
+                                if body is None and re.fullmatch(r'\d{3,4}', block[z]): body=int(block[z])
+                                cm=re.search(r'\(([+-]?\d+)\)', block[z])
+                                if cm:
+                                    change=int(cm.group(1)); break
+                            break
+            horses.append({'number':no,'name':name,'carry_weight':carry or 0.0,
+                           'body_weight':body or 0,'body_change':change,'odds':odds or 0.0,
+                           'popularity':popularity,'history':[]})
+            i=j
+        else:
+            i+=1
+    return horses
+
+def parse_history_text(text):
+    """近走コピペを {馬番: [history...]} に変換。"""
+    raw=str(text or '').replace('\r','')
+    header_pat=re.compile(r'(?m)^(\d{1,2})\s*\n([^\n]+)\s*\n\2のデータベース\s*$')
+    heads=list(header_pat.finditer(raw))
+    out={}
+    for hi,h in enumerate(heads):
+        no=int(h.group(1)); start=h.end(); end=heads[hi+1].start() if hi+1<len(heads) else len(raw)
+        block=raw[start:end]
+        races=[]
+        date_matches=list(re.finditer(r'(?m)^(\d{2}/\d{2})\s+帯広\(ば\s+\d+R\s*$', block))
+        for ri,dm in enumerate(date_matches[:5]):
+            rs=dm.start(); re_end=date_matches[ri+1].start() if ri+1<len(date_matches) else len(block)
+            chunk=block[rs:re_end]
+            fm=re.search(r'(?m)^\s*(\d{1,2})\s*\n\s*(\d{1,2})頭\s*$',chunk)
+            finish=int(fm.group(1)) if fm else None
+            mm=re.search(r'(\d+(?:\.\d+)?)%',chunk); moist=float(mm.group(1)) if mm else None
+            tsec=_time_to_sec(chunk)
+            wm=re.search(r'(?m)^\s*(\d{3}(?:\.\d+)?)\s*\n\s*\d{3,4}kg',chunk)
+            carry=float(wm.group(1)) if wm else None
+            bm=re.search(r'(?m)^後\s*\n\s*(\d+(?:\.\d+)?)\s*$',chunk)
+            bsec=float(bm.group(1)) if bm else None
+            races.append({'moisture':moist,'time_sec':tsec,'barrier_sec':bsec,
+                          'carry_weight':carry,'finish':finish,'date':dm.group(1)})
+        out[no]=races
+    return out
+
+def parse_pasted_netkeiba(entry_text, history_text):
+    horses=parse_entry_text(entry_text)
+    hist=parse_history_text(history_text)
+    for h in horses:
+        h['history']=hist.get(h['number'],[])
+    return horses
+
 st.set_page_config(page_title='ばんえいAI',layout='wide')
 st.title('🐎 ばんえいAI')
 st.caption('2日24Rで初期調整済み / 予想 → 保存 → 結果入力 → 自動回顧 → 自動学習')
@@ -166,9 +260,35 @@ T=st.tabs(['新規レース','保存レース','成績','学習設定','バッ�
 with T[0]:
     st.info('初期重みは2日24Rの検証から、障害・馬場水分・障害安定を強めに設定しています。')
     a,b,c=st.columns(3); name=a.text_input('レース名','帯広 1R'); moist=b.number_input('馬場水分 %',0.,10.,2.2,.1); date=c.date_input('日付')
-    mode=st.radio('入力方法',['フォーム','CSV一括'],horizontal=True)
+    mode=st.radio('入力方法',['テキスト貼り付け','フォーム','CSV一括'],horizontal=True)
     hs=[]
-    if mode=='CSV一括':
+    if mode=='テキスト貼り付け':
+        st.markdown('#### netkeibaテキスト貼り付け')
+        st.caption('「出馬表」と「近走」をそのままコピーして貼り付けます。馬名・斤量・オッズ・馬体重・増減・近5走を自動解析します。')
+        entry_text=st.text_area('出馬表 ↓',height=220,placeholder='1\\nプライムチョウター\\n牡3 ... 590.0\\n63.2\\n7人気 ...',key='entry_paste')
+        history_text=st.text_area('近走 ↓',height=360,placeholder='1\\nプライムチョウター\\nプライムチョウターのデータベース\\n...\\n07/20  帯広(ば 1R\\n...',key='history_paste')
+        if entry_text.strip():
+            hs=parse_pasted_netkeiba(entry_text,history_text)
+            if hs:
+                preview=[{'馬番':h['number'],'馬名':h['name'],'斤量':h['carry_weight'],'オッズ':h['odds'],
+                          '人気':h.get('popularity'),'馬体重':h['body_weight'],'増減':h['body_change'],
+                          '近走取得':len(h['history'])} for h in hs]
+                st.success(f'{len(hs)}頭を解析しました。')
+                st.dataframe(pd.DataFrame(preview),use_container_width=True,hide_index=True)
+                missing=[h['number'] for h in hs if not h['history']]
+                if history_text.strip() and missing:
+                    st.warning('近走を取得できなかった馬番: '+', '.join(map(str,missing)))
+                with st.expander('解析した近走を確認'):
+                    rows=[]
+                    for h in hs:
+                        for n,x in enumerate(h['history'],1):
+                            rows.append({'馬番':h['number'],'馬名':h['name'],'何走前':n,'日付':x.get('date'),
+                                         '水分':x.get('moisture'),'走破秒':x.get('time_sec'),'後/障害指標':x.get('barrier_sec'),
+                                         '斤量':x.get('carry_weight'),'着順':x.get('finish')})
+                    if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+            else:
+                st.error('出馬表を解析できませんでした。馬番から最終馬までまとめてコピーして貼り付けてください。')
+    elif mode=='CSV一括':
         st.caption('列: number,name,carry_weight,body_weight,body_change,odds,h1_m,h1_t,h1_b,h1_w,h1_f ... h5_m,h5_t,h5_b,h5_w,h5_f')
         sample_cols=['number','name','carry_weight','body_weight','body_change','odds']+[f'h{i}_{x}' for i in range(1,6) for x in ['m','t','b','w','f']]
         st.download_button('CSVテンプレート',pd.DataFrame(columns=sample_cols).to_csv(index=False).encode('utf-8-sig'),'banei_template.csv','text/csv')
@@ -266,11 +386,12 @@ with T[5]:
 - 推奨3連単 / 3連複を自動表示
 - 結果入力後に自動回顧＋小幅自動学習
 - 成績ダッシュボード
+- **netkeibaテキスト貼り付け入力（出馬表＋近走）**
 - CSV一括入力
 - バックアップ / 復元
 
 ### 入力のコツ
-過去走タイムは秒で入力します。例：`1:42.3` → `102.3`。障害秒が分かる場合は必ず入力すると精度が上がります。
+通常は **テキスト貼り付け** を選び、netkeibaの出馬表と近走をそのまま貼ればOKです。フォーム入力時のみ、過去走タイムは秒で入力します。例：`1:42.3` → `102.3`。障害秒が分かる場合は必ず入力すると精度が上がります。
 
 ### 注意
 初期24Rは会話内で検証した**結果順**を校正材料として使用し、詳細な全馬データを捏造してはいません。詳細特徴は、今後このツールで保存するレースほど正確に学習されます。
