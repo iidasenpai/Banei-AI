@@ -1,21 +1,32 @@
-# ばんえいAI 完成版
+# ばんえいAI - GitHub Pages版
 
-ばんえい競馬専用の予想・保存・結果入力・自動回顧・自動学習ツールです。
+この版は **Streamlit/Pythonを使わず、HTML/CSS/JavaScriptだけ** で動きます。
 
-## 追加機能
-- 2日24Rの検証を反映した初期重み
-- 障害力 / 障害安定 / 馬場水分適性 / 斤量適性 / 近走を分離評価
-- 穴スコア
-- 3連単 / 3連複候補
-- 成績ダッシュボード
-- CSV一括入力
-- バックアップ / 復元
+## GitHub Pagesで公開する手順
 
-## Streamlit Cloud
-Main file path は `app.py`。
+1. このZIPの中身をGitHubリポジトリのルートへアップロード
+2. GitHub → **Settings**
+3. 左メニュー → **Pages**
+4. `Build and deployment` の Source を **Deploy from a branch**
+5. Branchを **main / (root)** にして Save
+6. 数分待つと `https://<ユーザー名>.github.io/<リポジトリ名>/` で開けます
 
-## ローカル起動
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+## 保存について
+
+レース・結果・学習重みは **ブラウザのLocalStorage** に保存します。
+そのためStreamlit Cloudのような再起動で消えることはありません。
+
+ただし以下では消える可能性があります。
+
+- Safari/Chromeのサイトデータを削除
+- 別端末で開く
+- プライベートブラウズを使う
+
+そのため「バックアップ」タブからJSONを定期的に書き出してください。
+
+## ファイル
+
+- `index.html`
+- `style.css`
+- `app.js`
+- `.nojekyll`
